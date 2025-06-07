@@ -116,10 +116,8 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
     _setupListeners();
     _getDeviceId();
     _loadSessionsFromLocalStorage();
-    _analysisTimer = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => _postAnalysis(),
-    );
+    startContinuousAnalysis();
+
     // Initialize animation controller
     _scanAnimationController = AnimationController(
       duration: const Duration(seconds: 1),
@@ -1866,37 +1864,37 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
     
     // 將 strokeType 映射到中文名稱和英文名稱
     Map<String, Map<String, dynamic>> strokeInfo = {
-      'smash': {
+      'Smash': {
         'name': '殺球',
         'englishName': 'Smash',
         'color': Colors.red,
         'icon': Icons.arrow_downward,
       },
-      'drive': {
+      'Drive': {
         'name': '平球',
         'englishName': 'Drive',
         'color': Colors.orange,
         'icon': Icons.arrow_forward,
       },
-      'toss': {
+      'Lob': {
         'name': '挑球',
         'englishName': 'Toss',
         'color': Colors.yellow.shade800,
         'icon': Icons.arrow_upward,
       },
-      'drop': {
-        'name': '小球',
+      'Net': {
+        'name': '網前',
         'englishName': 'Drop',
         'color': Colors.green,
         'icon': Icons.arrow_drop_down,
       },
-      'clear': {
-        'name': '長球',
+      'Clear': {
+        'name': '高遠',
         'englishName': 'Clear',
         'color': Colors.blue,
         'icon': Icons.wifi_tethering,
       },
-      'other': {
+      'Other': {
         'name': '其他',
         'englishName': 'Other',
         'color': Colors.grey,
@@ -1952,34 +1950,44 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
     );
   }
 
-  Future<void> _postAnalysis() async {
-    // 如果感測器歷史數據不足 5 筆，則不進行分析
-    if (_sensorHistory.length < 5) {
-      print('Sensor history too short for analysis (${_sensorHistory.length} < 5)');
-      return;
+  void startContinuousAnalysis() async {
+    while (true) {
+      await _postAnalysis();  // 等待分析完成
+      await Future.delayed(Duration(seconds: 2));  // 延遲兩秒
     }
+  }
 
-    // 準備要發送的資料格式，符合 POST /inferencebydata API 的請求 Body
-    final List<Map<String, dynamic>> dataForInference = _sensorHistory.map((dataPoint) {
-      return {
-        "accel_x": dataPoint['accelX'] ?? 0.0, // 使用 ?? 0.0 提供預設值以防 null
-        "accel_y": dataPoint['accelY'] ?? 0.0,
-        "accel_z": dataPoint['accelZ'] ?? 0.0,
-        "gyro_x": dataPoint['gyroX'] ?? 0.0,
-        "gyro_y": dataPoint['gyroY'] ?? 0.0,
-        "gyro_z": dataPoint['gyroZ'] ?? 0.0,
-      };
-    }).toList();
+  bool _isPosting = false;
 
-    final Map<String, dynamic> requestBody = {
-      "data": dataForInference,
-    };
+  Future<void> _postAnalysis() async {
+    if (_isPosting) return; // 避免重複呼叫
+    _isPosting = true;
 
     try {
-      // POST /inferencebydata
-      final Uri apiUrl = Uri.parse('https://iot.dinochou.dev/inferencebydata');
+      // 感測器歷史數據不足 5 筆不進行分析
+      if (_sensorHistory.length < 5) {
+        print('Sensor history too short for analysis (${_sensorHistory.length} < 5)');
+        return;
+      }
 
-      print('Sending data to API: ${jsonEncode(requestBody)}'); // 方便除錯
+      // /inferencebydata API Body
+      final List<Map<String, dynamic>> dataForInference = _sensorHistory.map((dataPoint) {
+        return {
+          "accel_x": dataPoint['accelX'] ?? 0.0,
+          "accel_y": dataPoint['accelY'] ?? 0.0,
+          "accel_z": dataPoint['accelZ'] ?? 0.0,
+          "gyro_x": dataPoint['gyroX'] ?? 0.0,
+          "gyro_y": dataPoint['gyroY'] ?? 0.0,
+          "gyro_z": dataPoint['gyroZ'] ?? 0.0,
+        };
+      }).toList();
+
+      final Map<String, dynamic> requestBody = {
+        "data": dataForInference,
+      };
+
+      final Uri apiUrl = Uri.parse('https://iot.dinochou.dev/inferencebydata');
+      print('Sending data to API: ${jsonEncode(requestBody)}');
 
       final response = await http.post(
         apiUrl,
@@ -1987,63 +1995,48 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
         body: jsonEncode(requestBody),
       );
 
-      if (response.statusCode == 200) { // 成功回應狀態碼為 200 OK
+      if (response.statusCode == 200) {
         final responseData = jsonDecode(response.body);
 
-        // 檢查回應資料是否符合預期格式 (列表，每個元素包含 classification_prediction 和 speed_prediction)
         if (responseData is List && responseData.isNotEmpty) {
-          final firstPrediction = responseData[0]; // 取第一個預測結果
-          
-          // 確保 'classification_prediction' 是列表且不為空
+          final firstPrediction = responseData[0];
+
           final List<dynamic>? classificationList = firstPrediction['classification_prediction'];
           String strokeType = 'unknown';
           if (classificationList != null && classificationList.isNotEmpty) {
             strokeType = classificationList[0].toString();
           }
 
-          // 確保 'speed_prediction' 是列表的列表，並取第一個元素
           double speed = 0.0;
           if (firstPrediction['speed_prediction'] is List && firstPrediction['speed_prediction'].isNotEmpty) {
             final List<dynamic> speedPredictionOuter = firstPrediction['speed_prediction'];
             if (speedPredictionOuter[0] is List && speedPredictionOuter[0].isNotEmpty) {
-              speed = (speedPredictionOuter[0][0] as num).toDouble(); // 轉換為 double
+              speed = (speedPredictionOuter[0][0] as num).toDouble();
             }
           }
+
           setState(() {
             _predictionResults = {
               'speed': speed,
               'strokeType': strokeType,
             };
           });
+
           print('Inference successful: $_predictionResults');
-          _showCustomSnackBar(
-            "Inference successful!",
-            icon: Icons.check_circle,
-            isError: false,
-          );
+          _showCustomSnackBar("Inference successful!", icon: Icons.check_circle, isError: false);
         } else {
           print('Inference API response format error: $responseData');
-          _showCustomSnackBar(
-            "Inference failed: Invalid response format",
-            icon: Icons.warning_amber,
-            isError: true,
-          );
+          _showCustomSnackBar("Inference failed: Invalid response format", icon: Icons.warning_amber, isError: true);
         }
       } else {
         print('Server error during inference: ${response.statusCode}, Response body: ${response.body}');
-        _showCustomSnackBar(
-          "Inference failed: Server error ${response.statusCode}",
-          icon: Icons.cloud_off,
-          isError: true,
-        );
+        _showCustomSnackBar("Inference failed: Server error ${response.statusCode}", icon: Icons.cloud_off, isError: true);
       }
     } catch (e) {
       print('Auto analysis/inference error: $e');
-      _showCustomSnackBar(
-        "Inference connection error: ${e.toString().split(':').first}",
-        icon: Icons.error_outline,
-        isError: true,
-      );
+      _showCustomSnackBar("Inference connection error: ${e.toString().split(':').first}", icon: Icons.error_outline, isError: true);
+    } finally {
+      _isPosting = false; // 無論成功與否都解除鎖定
     }
   }
 
