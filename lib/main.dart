@@ -1961,16 +1961,22 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
 
   Future<void> _postAnalysis() async {
     if (_isPosting) return; // 避免重複呼叫
-    _isPosting = true;
+    _isPosting = true; // 設定鎖定狀態
 
     try {
       // 感測器歷史數據不足 30 筆不進行分析
       if (_sensorHistory.length < 30) {
         print('Sensor history too short for analysis (${_sensorHistory.length} < 30)');
-        return;
+        _showCustomSnackBar( // 新增用戶提示
+          "資料筆數不足，需至少 30 筆才能進行推論",
+          icon: Icons.info_outline,
+          isError: true,
+        );
+        return; // 直接返回，不發送請求
       }
 
-      // /inferencebydata API Body
+      // /inferencebydata API 的請求數據格式
+      // 根據 _sensorHistory 轉換為 API 預期的 List<Map<String, dynamic>>
       final List<Map<String, dynamic>> dataForInference = _sensorHistory.map((dataPoint) {
         return {
           "accel_x": dataPoint['accelX'] ?? 0.0,
@@ -1983,32 +1989,34 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
       }).toList();
 
       final Uri apiUrl = Uri.parse('https://iot.dinochou.dev/inferencebydata');
-      print('Sending data to API: ${jsonEncode(requestBody)}');
+      // 打印實際發送的 JSON 數據，用於調試
+      print('Sending data to API: ${jsonEncode(dataForInference)}');
 
       final response = await http.post(
         apiUrl,
         headers: {'Content-Type': 'application/json'},
+        // 直接將 dataForInference 列表作為請求體發送，不再包裹在 "data" 鍵中
         body: jsonEncode(dataForInference),
       );
 
+      // 檢查 HTTP 響應狀態碼
       if (response.statusCode == 200) {
-        final responseData = jsonDecode(response.body);
+        // 打印 API 返回的原始響應體，用於調試
+        print('API raw response body (from app): ${response.body}');
 
-        if (responseData is List && responseData.isNotEmpty) {
-          final firstPrediction = responseData[0];
+        final responseData = jsonDecode(response.body); // 解析 JSON 響應
 
-          final List<dynamic>? classificationList = firstPrediction['classification_prediction'];
-          String strokeType = 'unknown';
-          if (classificationList != null && classificationList.isNotEmpty) {
-            strokeType = classificationList[0].toString();
-          }
+        // **根據 API 實際回應格式進行判斷和處理**
+        // 期望的成功響應是 {"classification_prediction": "Net", "speed_prediction": 15.0}
+        if (responseData is Map<String, dynamic> &&
+            responseData.containsKey('classification_prediction') &&
+            responseData.containsKey('speed_prediction')) {
 
+          // 成功解析推論結果
+          final String strokeType = responseData['classification_prediction'].toString(); // 直接是字串
           double speed = 0.0;
-          if (firstPrediction['speed_prediction'] is List && firstPrediction['speed_prediction'].isNotEmpty) {
-            final List<dynamic> speedPredictionOuter = firstPrediction['speed_prediction'];
-            if (speedPredictionOuter[0] is List && speedPredictionOuter[0].isNotEmpty) {
-              speed = (speedPredictionOuter[0][0] as num).toDouble();
-            }
+          if (responseData['speed_prediction'] is num) { // 確保是數字類型
+            speed = (responseData['speed_prediction'] as num).toDouble(); // 直接是浮點數
           }
 
           setState(() {
@@ -2019,20 +2027,48 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
           });
 
           print('Inference successful: $_predictionResults');
-          _showCustomSnackBar("Inference successful!", icon: Icons.check_circle, isError: false);
+          _showCustomSnackBar(
+            "Inference successful", // 更具體的成功提示
+            icon: Icons.check_circle,
+            isError: false,
+          );
+        } else if (responseData is Map && responseData.containsKey('error')) {
+          // 處理 API 返回的業務邏輯錯誤（如：資料筆數不足）
+          final String errorMessage = responseData['error'].toString();
+          print('Inference API business error: $errorMessage');
+          _showCustomSnackBar(
+            "Inference failed: $errorMessage", // 直接顯示 API 返回的錯誤訊息
+            icon: Icons.error_outline,
+            isError: true,
+          );
         } else {
-          print('Inference API response format error: $responseData');
-          _showCustomSnackBar("Inference failed: Invalid response format", icon: Icons.warning_amber, isError: true);
+          // 如果 200 OK，但響應格式不是預期的成功格式，也不是錯誤物件格式
+          print('Inference API unexpected response format: $responseData');
+          _showCustomSnackBar(
+            "Inference failed: Unexpected response format",
+            icon: Icons.warning_amber,
+            isError: true,
+          );
         }
       } else {
+        // 處理非 200 狀態碼的伺服器錯誤 (如 500, 502, 404 等)
         print('Server error during inference: ${response.statusCode}, Response body: ${response.body}');
-        _showCustomSnackBar("Inference failed: Server error ${response.statusCode}", icon: Icons.cloud_off, isError: true);
+        _showCustomSnackBar(
+          "Inference failed: Server error ${response.statusCode}",
+          icon: Icons.cloud_off,
+          isError: true,
+        );
       }
     } catch (e) {
+      // 捕獲網路連接錯誤、JSON 解析錯誤等
       print('Auto analysis/inference error: $e');
-      _showCustomSnackBar("Inference connection error: ${e.toString().split(':').first}", icon: Icons.error_outline, isError: true);
+      _showCustomSnackBar(
+        "Inference connection error: ${e.toString().split(':').first}", // 顯示錯誤類型 (如 SocketException)
+        icon: Icons.error_outline,
+        isError: true,
+      );
     } finally {
-      _isPosting = false; // 無論成功與否都解除鎖定
+      _isPosting = false; // 無論成功與否都解除鎖定，允許下次再次發送
     }
   }
 
