@@ -1964,9 +1964,9 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
     _isPosting = true;
 
     try {
-      // 感測器歷史數據不足 5 筆不進行分析
-      if (_sensorHistory.length < 5) {
-        print('Sensor history too short for analysis (${_sensorHistory.length} < 5)');
+      // 感測器歷史數據不足 30 筆不進行分析
+      if (_sensorHistory.length < 30) {
+        print('Sensor history too short for analysis (${_sensorHistory.length} < 30)');
         return;
       }
 
@@ -1982,17 +1982,13 @@ class _MyHomePageState extends State<MyHomePage> with SingleTickerProviderStateM
         };
       }).toList();
 
-      final Map<String, dynamic> requestBody = {
-        "data": dataForInference,
-      };
-
       final Uri apiUrl = Uri.parse('https://iot.dinochou.dev/inferencebydata');
       print('Sending data to API: ${jsonEncode(requestBody)}');
 
       final response = await http.post(
         apiUrl,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(requestBody),
+        body: jsonEncode(dataForInference),
       );
 
       if (response.statusCode == 200) {
